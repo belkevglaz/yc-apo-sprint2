@@ -1,0 +1,286 @@
+#file: noinspection ComposeUnknownKeys
+# Config server -     27017
+# Shard 1 Replica 1 - 27018
+# Shard 1 Replica 2 - 27019
+# Shard 2 Replica 1 - 27028
+# Shard 2 Replica 2 - 27029
+# Router              27020
+name: sharding-repl-cache
+
+
+services:
+
+### MongoDB Block
+
+  # сервер конфигурации
+  configSrv:
+    image: mongo:${MONGO_VERSION} # docker образ
+    container_name: configSrv
+    restart: always
+    ports:
+      - "27017:27017"
+    networks:
+      app-network:
+    volumes:
+      - config-data:/data/db
+    # запуск в режиме конфигурации
+    command: mongod --configsvr --replSet config_server --bind_ip_all --port 27017
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      start_period: 10s
+
+  #  1-й шард  Replica 1
+  shard1-replica1:
+    image: mongo:${MONGO_VERSION}
+    container_name: shard1-replica1
+    restart: always
+    ports:
+      - "27018:27018"
+    networks:
+      app-network:
+    volumes:
+      - shard1-replica1-data:/data/db
+    # запуск в режиме шардинга
+    command: mongod --shardsvr --replSet shard1 --bind_ip_all --port 27018
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27018" ]
+      interval: 5s
+      start_period: 10s
+    depends_on:
+      - configSrv
+
+  #  1-й шард  Replica 2
+  shard1-replica2:
+    image: mongo:${MONGO_VERSION}
+    container_name: shard1-replica2
+    restart: always
+    ports:
+      - "27019:27019"
+    networks:
+      app-network:
+    volumes:
+      - shard1-replica2-data:/data/db
+    # запуск в режиме шардинга
+    command: mongod --shardsvr --replSet shard1 --bind_ip_all --port 27019
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27019"]
+      interval: 5s
+      start_period: 10s
+    depends_on:
+      - configSrv
+
+  #  2-й шард
+  shard2-replica1:
+    image: mongo:${MONGO_VERSION}
+    container_name: shard2-replica1
+    restart: always
+    ports:
+      - "27028:27028"
+    networks:
+      app-network:
+    volumes:
+      - shard2-replica1-data:/data/db
+    # запуск в режиме шардинга
+    # название реплик обратите внимание - она отличается от реплики 1-го шарда
+    command: mongod --shardsvr --replSet shard2 --bind_ip_all --port 27028
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27028" ]
+      interval: 5s
+      start_period: 10s
+  #  2-й шард
+
+  shard2-replica2:
+    image: mongo:${MONGO_VERSION}
+    container_name: shard2-replica2
+    restart: always
+    ports:
+      - "27029:27029"
+    networks:
+      app-network:
+    volumes:
+      - shard2-replica2-data:/data/db
+    # запуск в режиме шардинга
+    # название реплик обратите внимание - она отличается от реплики 1-го шарда
+    command: mongod --shardsvr --replSet shard2 --bind_ip_all --port 27029
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27029" ]
+      interval: 5s
+      start_period: 10s
+
+  #  роутер
+  mongos_router:
+    image: mongo:${MONGO_VERSION}
+    container_name: mongos_router
+    restart: always
+    ports:
+      - "27020:27020"
+    networks:
+      app-network:
+    command: mongos --configdb config_server/configSrv:27017 --bind_ip_all --port 27020
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27020" ]
+      interval: 5s
+      start_period: 10s
+
+  post-construct-container:
+    image: mongo:${MONGO_VERSION}
+    restart: "no"
+    volumes:
+      - init-mongodb:/data
+    networks:
+      app-network:
+    command:
+      - sh
+      - -c
+      - |
+        sleep 5
+        echo "Initialize config server"
+        mongosh --eval "rs.initiate( { _id : \"config_server\", configsvr: true, members: [ { _id : 0, host : \"configSrv:27017\" } ] } )" --host configSrv --port 27017
+        sleep 2
+        echo "Initialize shard 1 replica 1 & 2"
+        mongosh --eval "rs.initiate({_id:\"shard1\",members:[{_id:0,host:\"shard1-replica1:27018\"},{_id:1,host:\"shard1-replica2:27019\"}]})" --host shard1-replica1 --port 27018
+        sleep 2
+        echo "Initialize shard 2 replica 1 & 2"
+        mongosh --eval "rs.initiate({_id:\"shard2\",members:[{_id:0,host:\"shard2-replica1:27028\"},{_id:1,host:\"shard2-replica2:27029\"}]})" --host shard2-replica1 --port 27028
+        sleep 2
+        echo "Initialize mongo router #1"
+        cat <<EOF > /tmp/router-init.js
+        sh.addShard("shard1/shard1-replica1:27018");
+        sh.addShard("shard1/shard1-replica2:27019");
+        sh.addShard("shard2/shard2-replica1:27028");
+        sh.addShard("shard2/shard2-replica2:27029");
+        sh.enableSharding("somedb");
+        sh.shardCollection("somedb.helloDoc", { "name" : "hashed" } )
+        use somedb
+        for(var i = 0; i < 2000; i++) db.helloDoc.insertOne({age:i, name:"ly"+i})
+        db.helloDoc.countDocuments()
+        EOF
+        echo "Initialize mongo router #2"
+        mongosh < /tmp/router-init.js --host mongos_router --port 27020
+    depends_on:
+      - configSrv
+      - shard1-replica1
+      - shard1-replica2
+      - shard2-replica1
+      - shard2-replica2
+      - mongos_router
+
+### Redis Block
+  redis_1:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_1
+    ports:
+      - "6379"
+    volumes:
+      - redis_1_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.2
+
+  redis_2:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_2
+    ports:
+      - "6379"
+    volumes:
+      - redis_2_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.3
+
+  redis_3:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_3
+    ports:
+      - "6379"
+    volumes:
+      - redis_3_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.4
+
+  redis_4:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_4
+    ports:
+      - "6379"
+    volumes:
+      - redis_4_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.5
+
+  redis_5:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_5
+    ports:
+      - "6379"
+    volumes:
+      - redis_5_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.6
+
+  redis_6:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_6
+    ports:
+      - "6379"
+    volumes:
+      - redis_6_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.7
+
+  pymongo_api:
+    container_name: pymongo_api
+    build:
+      context: api_app
+      dockerfile: ../api_app/Dockerfile
+    image: kazhem/pymongo_api:1.0.0
+    depends_on:
+      - mongos_router
+    ports:
+      - "8080:8080"
+    networks:
+      app-network:
+    environment:
+      MONGODB_URL: "mongodb://mongos_router:27020"
+      MONGODB_DATABASE_NAME: "somedb"
+      REDIS_URL: "redis://redis_1:6379"
+
+
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 173.17.0.0/16
+
+volumes:
+  init-mongodb:
+  config-data:
+  shard1-replica1-data:
+  shard1-replica2-data:
+  shard2-replica1-data:
+  shard2-replica2-data:
+  redis_1_data: { }
+  redis_2_data: { }
+  redis_3_data: { }
+  redis_4_data: { }
+  redis_5_data: { }
+  redis_6_data: { }

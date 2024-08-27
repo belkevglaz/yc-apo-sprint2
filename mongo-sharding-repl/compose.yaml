@@ -1,0 +1,180 @@
+#file: noinspection ComposeUnknownKeys
+# Config server -     27017
+# Shard 1 Replica 1 - 27018
+# Shard 1 Replica 2 - 27019
+# Shard 2 Replica 1 - 27028
+# Shard 2 Replica 2 - 27029
+# Router              27020
+name: mongo-sharding-repl
+services:
+
+  # сервер конфигурации
+  configSrv:
+    image: mongo:latest # docker образ
+    container_name: configSrv
+    restart: always
+    ports:
+      - "27017:27017"
+    networks:
+      app-network:
+        ipv4_address: 173.17.0.10
+    volumes:
+      - config-data:/data/db
+    # запуск в режиме конфигурации
+    command: mongod --configsvr --replSet config_server --bind_ip_all --port 27017
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      start_period: 10s
+
+  #  1-й шард  Replica 1
+  shard1-replica1:
+    image: mongo:latest
+    container_name: shard1-replica1
+    restart: always
+    ports:
+      - "27018:27018"
+    networks:
+      app-network:
+    volumes:
+      - shard1-replica1-data:/data/db
+    # запуск в режиме шардинга
+    command: mongod --shardsvr --replSet shard1 --bind_ip_all --port 27018
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27018" ]
+      interval: 5s
+      start_period: 10s
+    depends_on:
+      - configSrv
+
+  #  1-й шард  Replica 2
+  shard1-replica2:
+    image: mongo:latest
+    container_name: shard1-replica2
+    restart: always
+    ports:
+      - "27019:27019"
+    networks:
+      app-network:
+    volumes:
+      - shard1-replica2-data:/data/db
+    # запуск в режиме шардинга
+    command: mongod --shardsvr --replSet shard1 --bind_ip_all --port 27019
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27019"]
+      interval: 5s
+      start_period: 10s
+    depends_on:
+      - configSrv
+
+  #  2-й шард
+  shard2-replica1:
+    image: mongo:latest
+    container_name: shard2-replica1
+    restart: always
+    ports:
+      - "27028:27028"
+    networks:
+      app-network:
+    volumes:
+      - shard2-replica1-data:/data/db
+    # запуск в режиме шардинга
+    # название реплик обратите внимание - она отличается от реплики 1-го шарда
+    command: mongod --shardsvr --replSet shard2 --bind_ip_all --port 27028
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27028" ]
+      interval: 5s
+      start_period: 10s
+  #  2-й шард
+
+  shard2-replica2:
+    image: mongo:latest
+    container_name: shard2-replica2
+    restart: always
+    ports:
+      - "27029:27029"
+    networks:
+      app-network:
+    volumes:
+      - shard2-replica2-data:/data/db
+    # запуск в режиме шардинга
+    # название реплик обратите внимание - она отличается от реплики 1-го шарда
+    command: mongod --shardsvr --replSet shard2 --bind_ip_all --port 27029
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27029" ]
+      interval: 5s
+      start_period: 10s
+
+  #  роутер
+  mongos_router:
+    image: mongo:latest
+    container_name: mongos_router
+    restart: always
+    ports:
+      - "27020:27020"
+    networks:
+      app-network:
+    command: mongos --configdb config_server/configSrv:27017 --bind_ip_all --port 27020
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--port", "27020" ]
+      interval: 5s
+      start_period: 10s
+
+  post-construct-container:
+    image: mongo:latest
+    restart: "no"
+    volumes:
+      - init-mongodb:/data
+    networks:
+      app-network:
+    command:
+      - sh
+      - -c
+      - |
+        sleep 10
+        echo "Initialize config server"
+        mongosh --eval "rs.initiate( { _id : \"config_server\", configsvr: true, members: [ { _id : 0, host : \"configSrv:27017\" } ] } )" --host configSrv --port 27017
+        sleep 2
+        echo "Initialize shard 1 replica 1 & 2"
+        mongosh --eval "rs.initiate({_id:\"shard1\",members:[{_id:0,host:\"shard1-replica1:27018\"},{_id:1,host:\"shard1-replica2:27019\"}]})" --host shard1-replica1 --port 27018
+        sleep 2
+        echo "Initialize shard 2 replica 1 & 2"
+        mongosh --eval "rs.initiate({_id:\"shard2\",members:[{_id:0,host:\"shard2-replica1:27028\"},{_id:1,host:\"shard2-replica2:27029\"}]})" --host shard2-replica1 --port 27028
+        sleep 2
+        echo "Initialize mongo router #1"
+        cat <<EOF > /tmp/router-init.js
+        sh.addShard("shard1/shard1-replica1:27018");
+        sh.addShard("shard1/shard1-replica2:27019");
+        sh.addShard("shard2/shard2-replica1:27028");
+        sh.addShard("shard2/shard2-replica2:27029");
+        sh.enableSharding("somedb");
+        sh.shardCollection("somedb.helloDoc", { "name" : "hashed" } )
+        use somedb
+        for(var i = 0; i < 1000; i++) db.helloDoc.insertOne({age:i, name:"ly"+i})
+        db.helloDoc.countDocuments()
+        EOF
+        echo "Initialize mongo router #2"
+        mongosh < /tmp/router-init.js --host mongos_router --port 27020
+    depends_on:
+      - configSrv
+      - shard1-replica1
+      - shard1-replica2
+      - shard2-replica1
+      - shard2-replica2
+      - mongos_router
+
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 173.17.0.0/16
+
+volumes:
+  init-mongodb:
+  config-data:
+  shard1-replica1-data:
+  shard1-replica2-data:
+  shard2-replica1-data:
+  shard2-replica2-data:
