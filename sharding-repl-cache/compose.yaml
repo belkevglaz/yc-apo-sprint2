@@ -5,19 +5,22 @@
 # Shard 2 Replica 1 - 27028
 # Shard 2 Replica 2 - 27029
 # Router              27020
-name: mongo-sharding-repl
+name: sharding-repl-cache
+
+
 services:
+
+### MongoDB Block
 
   # сервер конфигурации
   configSrv:
-    image: mongo:latest # docker образ
+    image: mongo:${MONGO_VERSION} # docker образ
     container_name: configSrv
     restart: always
     ports:
       - "27017:27017"
     networks:
       app-network:
-        ipv4_address: 173.17.0.10
     volumes:
       - config-data:/data/db
     # запуск в режиме конфигурации
@@ -29,7 +32,7 @@ services:
 
   #  1-й шард  Replica 1
   shard1-replica1:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     container_name: shard1-replica1
     restart: always
     ports:
@@ -49,7 +52,7 @@ services:
 
   #  1-й шард  Replica 2
   shard1-replica2:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     container_name: shard1-replica2
     restart: always
     ports:
@@ -69,7 +72,7 @@ services:
 
   #  2-й шард
   shard2-replica1:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     container_name: shard2-replica1
     restart: always
     ports:
@@ -88,7 +91,7 @@ services:
   #  2-й шард
 
   shard2-replica2:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     container_name: shard2-replica2
     restart: always
     ports:
@@ -107,7 +110,7 @@ services:
 
   #  роутер
   mongos_router:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     container_name: mongos_router
     restart: always
     ports:
@@ -121,7 +124,7 @@ services:
       start_period: 10s
 
   post-construct-container:
-    image: mongo:latest
+    image: mongo:${MONGO_VERSION}
     restart: "no"
     volumes:
       - init-mongodb:/data
@@ -150,7 +153,7 @@ services:
         sh.enableSharding("somedb");
         sh.shardCollection("somedb.helloDoc", { "name" : "hashed" } )
         use somedb
-        for(var i = 0; i < 1000; i++) db.helloDoc.insertOne({age:i, name:"ly"+i})
+        for(var i = 0; i < 2000; i++) db.helloDoc.insertOne({age:i, name:"ly"+i})
         db.helloDoc.countDocuments()
         EOF
         echo "Initialize mongo router #2"
@@ -162,6 +165,103 @@ services:
       - shard2-replica1
       - shard2-replica2
       - mongos_router
+
+### Redis Block
+  redis_1:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_1
+    ports:
+      - "6379"
+    volumes:
+      - redis_1_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.2
+
+  redis_2:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_2
+    ports:
+      - "6379"
+    volumes:
+      - redis_2_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.3
+
+  redis_3:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_3
+    ports:
+      - "6379"
+    volumes:
+      - redis_3_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.4
+
+  redis_4:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_4
+    ports:
+      - "6379"
+    volumes:
+      - redis_4_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.5
+
+  redis_5:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_5
+    ports:
+      - "6379"
+    volumes:
+      - redis_5_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.6
+
+  redis_6:
+    image: redis:${REDIS_VERSION}
+    container_name: redis_6
+    ports:
+      - "6379"
+    volumes:
+      - redis_6_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    networks:
+      app-network:
+#        ipv4_address: 173.17.0.7
+
+  pymongo_api:
+    container_name: pymongo_api
+    build:
+      context: api_app
+      dockerfile: ../api_app/Dockerfile
+    image: kazhem/pymongo_api:1.0.0
+    depends_on:
+      - mongos_router
+    ports:
+      - "8080:8080"
+    networks:
+      app-network:
+    environment:
+      MONGODB_URL: "mongodb://mongos_router:27020"
+      MONGODB_DATABASE_NAME: "somedb"
+      REDIS_URL: "redis://redis_1:6379"
+
 
 networks:
   app-network:
@@ -178,3 +278,9 @@ volumes:
   shard1-replica2-data:
   shard2-replica1-data:
   shard2-replica2-data:
+  redis_1_data: { }
+  redis_2_data: { }
+  redis_3_data: { }
+  redis_4_data: { }
+  redis_5_data: { }
+  redis_6_data: { }
