@@ -3,18 +3,21 @@ cd sharding-repl-cache || exit
 docker compose down --remove-orphans -v && docker compose up -d
 
 ## Ждем пока поднимутся контейнеры
+echo "Ждем инициализации запуска контейнеров..."
 sleep 10
 
 ## Инициализируем кластер redis
 docker exec -it redis_1 sh -c "echo 'yes' | redis-cli --cluster create redis_1:6379 redis_2:6379 redis_3:6379 redis_4:6379 redis_5:6379 redis_6:6379 --cluster-replicas 1"
 
 # Ждем пока настроится router и проинициализируется база
+echo "Ждем инициализации базы данных..."
 sleep 20
 
 ## Получим общее количество документов
 curl -s http://0.0.0.0:8080/helloDoc/count
 echo ""
 
+echo "Замеряем время..."
 ### Замерим среднее время ответа
 url="http://0.0.0.0:8080/helloDoc/users"
 total_requests=10
